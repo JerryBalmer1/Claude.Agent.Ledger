@@ -69,3 +69,35 @@ the loss a `seq-gap`. The cost is a false alarm after a writer crash, which is r
 Not closed: the keeper syncs only when it starts. If the spool counter is lost and the writer appends before
 the keeper starts, those lines repeat earlier numbers and fail `seq-gap`. In Claude.Agent the keeper starts
 first, and `Invoke-Build Clean` drops spool and ledger together.
+
+## 5. A rejected line is the same line again only if it carries a stamp
+
+0.2.3 found that a crash between chaining and truncating the spool ledgered a rejected line twice: the skip
+compared pending text with the trailing payloads, and a rejected line's payload is its `ledger.rejected` wrapper,
+stamped with the keeper's clock, so it never matched. The flush now also compares pending text with the
+`body.line` of trailing `ledger.rejected` entries.
+
+Text alone is not identity, though. A writer line carries a stamp to 100 ns and a seq, so the same text twice is
+the same line. Garbage such as `not json` carries neither and can honestly arrive twice; skipping it would drop
+the second one silently, which decision 3 rules out. So a rejected line is skipped only if it starts with a
+`stamp` string member, and one without a stamp is always ledgered. The cost is that a crash can record a stampless
+rejected line twice. That over-records and never hides anything.
+
+A precise fix, with a marker on the ledger volume naming the spool prefix a flush consumed, was not taken: it
+adds a file and a protocol to cover garbage lines across a crash, a case where a duplicate costs nothing.
+
+## 6. agent.snapshot runs ldd as the agent
+
+`agent.snapshot` lists the executables on `PATH` with their linked libraries, via ldd. glibc's ldd can run a
+binary's own loader, so at `agent.stop` a binary the agent planted could run code under it. That code runs as
+the agent uid, in the agent container, where the agent can already run anything, so ldd adds no privilege. ldd
+is batched (one call per 200 files), run with a deadline and killed when it passes it, so a hang costs one
+error in `errors` and does not block `agent.stop`. Reading ELF `DT_NEEDED` entries in PowerShell would avoid
+running anything, but it would not resolve paths the way the loader does, and the agent gains nothing from
+either way.
+
+The snapshot redacts by variable name only (token, secret, key, password, credential). Scanning values would
+flag hashes and digests and still miss a secret in an innocent-looking value. `PAT` is redacted too, as a whole
+name segment so `PATH` is kept: the first host run of the tests showed an `AZDO_PAT` in clear under the five words
+alone. MCP server `args`, `env` and
+`headers` are left out entirely, because that is where servers take their tokens.

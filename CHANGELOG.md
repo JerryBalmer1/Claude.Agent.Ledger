@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.4 - 2026-10-09
+
+- 0.2.4: findings fixes; snapshot entries
+- Finding 2: a rejected spool line carrying a stamp is not ledgered twice after a keeper crash between chaining
+  and truncating; the flush matches it against the `body.line` of trailing `ledger.rejected` entries. A stampless
+  one is still ledgered again, never dropped (design 5).
+- Finding 4: the keeper checks `stamp` (UTC `yyyy-MM-ddTHH:mm:ss.fffffffZ`, a real date) and `body` (an object) on
+  intake; new `ledger.rejected` reasons `stamp is not a UTC yyyy-MM-ddTHH:mm:ss.fffffffZ string` and
+  `body is not a JSON object`. Existing ledgers verify unchanged.
+- Findings 1 and 3: the README describes the MAC payload as the line minus its end-anchored `prev`/`mac` suffix,
+  and says the keeper stamps `ledger.rejected`. `Start-LedgerKeeper` help updated.
+- New `Get-AgentSnapshot -At agent.egress-check|agent.stop`: the body of a new `agent.snapshot` entry (env with
+  values `<redacted>` under names containing token, secret, key, password or credential, or a `PAT` segment; image digest, os-release, packages, executables on PATH with ldd libraries,
+  mounts, uid/gid/groups, tools, hooks and MCP servers handed to claude). Design 6.
+- `docs/stream-contract.md`: `agent.snapshot` section and run rows; `policy.deny` with `reason: "hook-failure"`
+  for a failed pre hook (Finding 5); each Finding marked with what 0.2.4 did. Emitting both needs Claude.Agent's
+  entrypoint and Claude.Agent.Policy's pre hook to change, which is not done here.
+- `tests/fixtures/policy-smoke.ledger.jsonl`: two real `agent.snapshot` lines from `claude-agent:dev`, inserted
+  after `agent.egress-check` and before `agent.stop`. seq is now 46..56, `prev` is re-chained from the line-45
+  anchor, and every `mac` is recomputed with a 32-zero-byte fixture key (the run's `key.bin` is gone) and now
+  checked. New `tests/Findings.Tests.ps1` and `tests/Snapshot.Tests.ps1`; `tests/StreamContract.Tests.ps1` extended.
+
 ## 0.2.3 - 2026-10-09
 
 - 0.2.3: stream contract doc; policy-smoke fixture

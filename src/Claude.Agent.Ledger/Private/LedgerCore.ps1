@@ -65,9 +65,32 @@ function Test-PendingLine {
     if (($names -join ',') -cne ($script:PayloadMembers -join ',')) {
         return "members are '$($names -join ',')', expected '$($script:PayloadMembers -join ',')'"
     }
+    if ($null -eq (Get-PendingStamp -Line $Line -Strict)) { return 'stamp is not a UTC yyyy-MM-ddTHH:mm:ss.fffffffZ string' }
     if ($obj.kind -isnot [string] -or $obj.kind.Length -eq 0) { return 'kind is not a non-empty string' }
+    if ($obj.body -isnot [System.Collections.IDictionary]) { return 'body is not a JSON object' }
     if ($obj.seq -isnot [long] -and $obj.seq -isnot [int]) { return 'seq is not an integer' }
     $null
+}
+
+# The stamp string of a pending line, read from its raw text: ConvertFrom-Json turns ISO strings into local
+# DateTimes and -DateKind needs PowerShell 7.5. $null when the line has no leading "stamp" string member.
+# -Strict also requires the writer's format (UTC, 7 fractional digits, Z) and a real date.
+function Get-PendingStamp {
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string] $Line,
+        [switch] $Strict
+    )
+
+    $m = [regex]::Match($Line, '^\{\s*"stamp"\s*:\s*"(?<s>[^"\\]*)"')
+    if (-not $m.Success -or $m.Groups['s'].Length -eq 0) { return $null }
+    $stamp = $m.Groups['s'].Value
+    if ($Strict) {
+        $parsed = [datetime]::MinValue
+        $ok = [datetime]::TryParseExact($stamp, "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$parsed)
+        if (-not $ok) { return $null }
+    }
+    $stamp
 }
 
 # The writer's seq in a payload (a pending line, or a ledger line's payload), or $null when it has none.
@@ -79,6 +102,18 @@ function Get-PayloadSeq {
     if ($obj -isnot [System.Collections.IDictionary] -or -not $obj.Contains('seq')) { return $null }
     if ($obj.seq -is [long] -or $obj.seq -is [int]) { return [long]$obj.seq }
     $null
+}
+
+# The raw pending text a ledger.rejected payload wraps, or $null for any other payload.
+function Get-RejectedLine {
+    param([Parameter(Mandatory)][AllowEmptyString()][string] $Payload)
+
+    try { $obj = $Payload | ConvertFrom-Json -AsHashtable -ErrorAction Stop }
+    catch { return $null }
+    if ($obj -isnot [System.Collections.IDictionary] -or $obj['kind'] -cne 'ledger.rejected') { return $null }
+    $body = $obj['body']
+    if ($body -isnot [System.Collections.IDictionary] -or $body['line'] -isnot [string]) { return $null }
+    $body['line']
 }
 
 # Appends payloads to an open, locked ledger stream, each chained to the line before it.

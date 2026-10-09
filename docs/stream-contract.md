@@ -2,11 +2,11 @@
 
 The exact shape of `ledger.jsonl` as the keeper (`Start-LedgerKeeper`) writes it, for anything that reads the
 stream: `Test-Ledger`, Claude.Agent's Smoke and Alerts tasks, Claude.Agent.Alerts, Claude.Agent.Runner.
-Each statement below was checked against the code at 0.2.3 (the writer and keeper are unchanged since 0.2.1);
-the source is named in brackets. Where this repo's other docs say something different, the code wins and the
-difference is listed under [Findings](#findings).
+Each statement below was checked against the code at 0.2.4; the source is named in brackets. At 0.2.3 this
+repo's other docs disagreed with the code in five places, listed under [Findings](#findings) with what 0.2.4
+did about each.
 
-`tests/fixtures/policy-smoke.ledger.jsonl` is a real stream (see [Fixture](#fixture)) and
+`tests/fixtures/policy-smoke.ledger.jsonl` is a real run plus two real snapshots, re-chained (see [Fixture](#fixture)), and
 `tests/StreamContract.Tests.ps1` checks it against this document.
 
 ## File
@@ -22,9 +22,9 @@ Every line is one JSON object whose members appear in exactly this order:
 
 | # | Member | JSON type | Required | Set by | Notes |
 |---|---|---|---|---|---|
-| 1 | `stamp` | string | yes | writer (keeper for `ledger.rejected`) | `yyyy-MM-ddTHH:mm:ss.fffffffZ`: UTC, 7 fractional digits, `Z`. [New-LedgerPayload] |
+| 1 | `stamp` | string | yes | writer (keeper for `ledger.rejected`) | `yyyy-MM-ddTHH:mm:ss.fffffffZ`: UTC, 7 fractional digits, `Z`. Checked on intake. [New-LedgerPayload, Test-PendingLine] |
 | 2 | `kind` | string | yes | writer (keeper for `ledger.rejected`) | Non-empty. Dotted by convention; the keeper does not check the format. [Test-PendingLine] |
-| 3 | `body` | object | yes | writer | Any JSON object, `{}` when empty. Member order is **not meaningful** (see below). |
+| 3 | `body` | object | yes | writer | Any JSON object, `{}` when empty; checked on intake. Member order is **not meaningful** (see below). |
 | 4 | `seq` | integer | writer lines only | writer | Absent on `ledger.rejected` and on 0.1.0 lines. [New-LedgerPayload, Invoke-LedgerFlush] |
 | 5 | `prev` | string, 64 lowercase hex | yes | keeper | SHA-256 of the previous line. |
 | 6 | `mac` | string, 64 lowercase hex | yes | keeper | HMAC-SHA256 with `key.bin`. |
@@ -41,7 +41,8 @@ suffix. A line is therefore `payload` with its closing `}` replaced by
 
 To recover the payload, match the suffix **anchored at the end of the line**:
 `^(?<payload>\{.*),"prev":"(?<prev>[0-9a-f]{64})","mac":"(?<mac>[0-9a-f]{64})"\}$`, then payload = group + `}`.
-A line that does not match is `malformed`. Do not split at the first `,"prev":` (Finding 1). [Split-LedgerLine]
+A line that does not match is `malformed`. Do not split at the first `,"prev":`: a `body` member named `prev`
+would end the payload early (Finding 1). [Split-LedgerLine]
 
 ### Serialisation
 
@@ -85,10 +86,12 @@ The keeper chains a pending line as-is only if all of these hold. [Test-PendingL
 1. It starts with `{` and ends with `}` (so a CRLF-terminated line fails).
 2. It parses as a JSON object.
 3. Its members are exactly `stamp,kind,body,seq` in that order, compared case-sensitively.
-4. `kind` is a non-empty string.
-5. `seq` is an integer.
+4. `stamp` is a string in the writer's format, `yyyy-MM-ddTHH:mm:ss.fffffffZ`, naming a real date (since 0.2.4).
+5. `kind` is a non-empty string.
+6. `body` is a JSON object (since 0.2.4).
+7. `seq` is an integer.
 
-Nothing else is checked: `stamp` may be any type or format, and `body` any JSON value (Finding 4).
+Nothing else is checked: not what `body` holds, not the format of `kind`, not whether `seq` is the next one.
 
 Any other non-empty pending line becomes a keeper-written entry instead. [Invoke-LedgerFlush]
 
@@ -97,13 +100,20 @@ Any other non-empty pending line becomes a keeper-written entry instead. [Invoke
 ```
 
 - It has no `seq`, so a rejected line that carried one shows up as a `seq-gap` at the next writer line.
-- `reason` is one of: `not a JSON object`; `not valid JSON: <parser message>`;
-  `members are '<got>', expected 'stamp,kind,body,seq'`; `kind is not a non-empty string`; `seq is not an integer`.
+- `reason` is the first of these that applies: `not a JSON object`; `not valid JSON: <parser message>`;
+  `members are '<got>', expected 'stamp,kind,body,seq'`; `stamp is not a UTC yyyy-MM-ddTHH:mm:ss.fffffffZ string`;
+  `kind is not a non-empty string`; `body is not a JSON object`; `seq is not an integer`.
+- Its `stamp` is the keeper's clock at flush time, not the writer's (Finding 3).
 - Empty pending lines are dropped silently. A trailing pending line with no LF yet is left for the next flush.
 
-Before chaining, a flush skips a pending line whose exact text equals the payload of one of the last *N* ledger
-lines, where *N* is the number of pending lines. This avoids double-chaining after a crash between the append
-and the spool truncation. [Invoke-LedgerFlush]
+Before chaining, a flush looks at the last *N* ledger lines, where *N* is the number of pending lines, so that a
+crash between the append and the spool truncation does not ledger a line twice. [Invoke-LedgerFlush]
+
+- A pending line whose exact text equals one of those payloads was chained as-is, and is skipped.
+- A pending line the keeper would reject is skipped if its exact text equals the `body.line` of one of those
+  `ledger.rejected` entries **and** it starts with a `stamp` string member. The stamp makes it the same line: a
+  writer line's text is unique to 100 ns. A rejected line without a stamp (`not json`) can honestly repeat, so it
+  is never skipped. A crash can record it twice but never drops it (design 5, Finding 2).
 
 ## What the keeper does not write
 
@@ -118,11 +128,16 @@ One container run writes, in order:
 | kind | body members | when |
 |---|---|---|
 | `agent.egress-check` | `directBlocked` (bool), `curlExit` (int), `detail` (string) | Always first. |
+| `agent.snapshot` | see [agent.snapshot](#agentsnapshot), `at`: `agent.egress-check` | Right after `agent.egress-check`, whatever `directBlocked` says. |
 | `agent.start` | `claudeVersion`, `hostname`, `user`, `mode` (`run`/`probe`), `auth` (`oauth`/`apikey`/null), `policySha256` | Only if `directBlocked` is true. |
 | `policy.*` | see below | Zero or more, during `claude -p`. |
 | `agent.run` | `auth`, `exitCode` (int), `output` (string), `smokeFile`, `smokeExists` (bool) | `mode` = `run` (a credential is present). |
 | `agent.probe` | `url`, `status` (string), `curlExit` (int) | `mode` = `probe` (no credential). |
+| `agent.snapshot` | `at`: `agent.stop` | Right before `agent.stop`. |
 | `agent.stop` | `{}` | Last, on a normal exit. |
+
+The two `agent.snapshot` rows are the contract from 0.2.4 on. Claude.Agent's `entrypoint.ps1` does not emit them
+yet; until it does, runs have neither.
 
 - **Start of a run** = an `agent.egress-check` line. Claude.Agent's Smoke and Alerts tasks find the last run this way.
 - **Stop of a run** = `agent.stop`. A run can end without one:
@@ -130,6 +145,35 @@ One container run writes, in order:
   - any thrown error ends the script early, because it runs with `$ErrorActionPreference = 'Stop'`.
   - A refusal because both credentials are set (exit 2) writes nothing at all.
 - `auth` records which credential type was present. No credential value is ever in the stream.
+
+## agent.snapshot
+
+What the agent container held and was handed, taken twice per run so the two can be compared: what changed
+between them changed during the run. The body is `Get-AgentSnapshot -At <point>`, spooled with
+`Add-LedgerEntry -Kind agent.snapshot`. [Get-AgentSnapshot]
+
+| member | JSON type | content |
+|---|---|---|
+| `at` | string | `agent.egress-check` or `agent.stop`: the entry this snapshot goes with. |
+| `env` | object | Every environment variable, name to value. A name containing `token`, `secret`, `key`, `password` or `credential` (any case), or with `PAT` as a whole `_`/`-`/`.`-separated segment (`AZDO_PAT`, not `PATH`), has the value `"<redacted>"`, empty or not. Names are case-sensitive, sorted ordinally. |
+| `imageDigest` | string or null | The image the container runs, as handed in (`-ImageDigest`, default `$env:CLAUDE_AGENT_IMAGE_DIGEST`). A container cannot read its own digest, so it is null unless the runner passes it. |
+| `os` | object or null | `/etc/os-release`, key to unquoted value (`ID`, `VERSION_ID`, `PRETTY_NAME`, ...). |
+| `packageManager` | string or null | `dpkg` or `apk`, whichever answered. |
+| `packages` | array or null | `[{name, version}]`, sorted by name. |
+| `executables` | array or null | Every executable regular file in each `PATH` directory, a directory reached twice (`/bin` -> `/usr/bin`) listed once: `[{path, target, elf, libraries}]`. `target` is the resolved symlink target or null. `libraries` is null for a non-ELF file (a script), `[]` for a static one, else ldd's lines without load addresses: `name => path`, `name => not found`, or a bare path. |
+| `mounts` | array or null | `/proc/self/mounts` in order: `[{source, target, type, options}]`. |
+| `uid`, `gid` | integer or null | Effective ids from `/proc/self/status`. |
+| `groups` | array of integer or null | Supplementary groups. |
+| `user` | string | User name. |
+| `tools` | object | `named`: tool names handed to `claude` (`-Tools`), or null for its default set; `permissions`: `permissions` from `~/.claude/settings.json`, or null; `hooks`: event to hook commands from that file, or null. |
+| `mcpServers` | array | `[{name, source, type, command, url}]` from `~/.claude.json` (top level and per project), `./.mcp.json` and any `-McpConfig` file. Never `args`, `env` or `headers`, where servers take their tokens; `url` keeps scheme, host, port and path only. |
+| `errors` | array of string | `"<part>: <message>"` for each part that failed and was left null. Empty normally. |
+
+- Null means not available here (not Linux, no `/etc/os-release`, no package manager), or failed and named in `errors`.
+- Only names are redacted. A value under an innocent name (a token in `HTTPS_PROXY`'s userinfo, say) is kept.
+- A snapshot line is large: about 105 KB in Claude.Agent's image (408 executables, 109 packages).
+- ldd runs as the agent, with a deadline. A planted binary can run code under ldd at `agent.stop`; it gets
+  nothing the agent uid does not already have (design 6).
 
 ## Policy decisions (Claude.Agent.Policy `hooks/`)
 
@@ -156,45 +200,85 @@ From the policy-smoke fixture:
 {"stamp":"2026-10-09T02:50:53.6154994Z","kind":"policy.deny","body":{"reason":"File.delete /work/policy-smoke.txt denied by policy rules[2]","rule":"rules[2]","path":"/work/policy-smoke.txt","command":"rm /work/policy-smoke.txt","phase":"pre","tool":"Bash","kindAction":"File.delete"},"seq":52,"prev":"…","mac":"…"}
 ```
 
-Two cases leave a mark that is not a `policy.deny` line:
-
-- If the pre hook itself fails (no policy, bad payload, the spool write throws), it still denies with exit 2, but
-  writes **no line**. A blocked call can be missing from the stream (Finding 5).
 - A `policy.deny` with `phase: "post"` means a call ran that the policy refuses. Nothing should produce one.
+
+### Hook failure
+
+If the pre hook itself fails (no policy, an unreadable payload, Claude.Agent.Policy failing to load or to
+decide), it still denies with exit 2.
+From 0.2.4 the contract is that it first spools one `policy.deny` line with `reason: "hook-failure"`, so a denial
+is never missing from the stream:
+
+| member | value |
+|---|---|
+| `phase` | `"pre"` |
+| `tool` | `tool_name` from the hook payload if it was read, else null |
+| `kindAction`, `path`, `rule` | null: no decision was made |
+| `reason` | `"hook-failure"`, exactly. Readers tell a failure from a policy denial by this value. |
+| `error` | the exception message |
+
+```json
+{"stamp":"2026-10-09T02:50:53.6154994Z","kind":"policy.deny","body":{"reason":"hook-failure","rule":null,"path":null,"error":"Cannot find path '/opt/agent/policy/policy.json' because it does not exist.","phase":"pre","tool":"Bash","kindAction":null},"seq":52}
+```
+
+The hook writes that line inside its failure handler, and denies with exit 2 whether the write succeeds or not.
+What still leaves no line: the spool write itself failing (unwritable or locked spool), or the Ledger module
+failing to load. Then the only traces are the hook's stderr and, if the writer had already taken a `seq`, a
+`seq-gap` at the next line.
+
+Claude.Agent.Policy's `hooks/pre-tool-use.ps1` does not write this line yet. Until it does, a failed hook
+denies without a line (Finding 5).
 
 ## Fixture
 
-`tests/fixtures/policy-smoke.ledger.jsonl` contains lines 46 to 54 of `C:\__Code\Claude.Agent\artifacts\ledger\ledger.jsonl`,
-copied byte for byte (3477 bytes, SHA-256 `8a6a6941ffdd7fecbde72daca03a2d9d69b9e814fc01b427afff876a91130e5a`).
-Claude.Agent's Smoke task copied that ledger out after the run and `Test-Ledger` passed on it
-(`smoke-report.json` `ledger.valid: true`). Those lines are the last run (hostname `ed543aff0ee7`): read
-`/etc/hostname`, write `/work/policy-smoke.txt`, delete denied by `rules[2]`. Nothing was redacted: no token
-appears; `"auth":"oauth"` is only the credential type.
+`tests/fixtures/policy-smoke.ledger.jsonl` (11 lines, 212896 bytes, SHA-256
+`252c40e06d18332d6261c59b380f346fd9824ce13433c7520810079c7005856f`) is one run as it would read with
+`agent.snapshot` emitted:
 
-Because the fixture is a slice, its first `prev` is not genesis. It is the SHA-256 of ledger line 45,
-`00a198bc39ddaa86daafd334bdf24865c84cf9c840412281446c7ab730ec405f`, and the tests anchor on it.
-Smoke deletes `key.bin` after verifying, so `mac` cannot be rechecked here. The tests check the `prev` chain and
-the `mac` format only.
+- **Nine real lines.** Lines 46 to 54 of `C:\__Code\Claude.Agent\artifacts\ledger\ledger.jsonl`, the last run
+  (hostname `ed543aff0ee7`): read `/etc/hostname`, write `/work/policy-smoke.txt`, delete denied by `rules[2]`.
+  Claude.Agent's Smoke task copied that ledger out and `Test-Ledger` passed on it (`smoke-report.json`
+  `ledger.valid: true`). 0.2.3 kept those 9 lines byte for byte (3477 bytes, SHA-256
+  `8a6a6941ffdd7fecbde72daca03a2d9d69b9e814fc01b427afff876a91130e5a`). Their payloads are unchanged except `seq`.
+- **Two snapshot lines**, inserted after `agent.egress-check` and before `agent.stop`, are real `Get-AgentSnapshot`
+  output from Claude.Agent's `claude-agent:dev` image (`sha256:51a8cf59…`). They were taken as `agent` (uid 10001)
+  with `/spool` and `/ca` volumes mounted and the run's hostname set, and the policy hook fragment was merged in
+  between them as the entrypoint does. They come from a separate container started for the purpose, not from
+  that run. `CLAUDE_CODE_OAUTH_TOKEN` was set to a placeholder and shows as `<redacted>`. Their stamps are
+  midway between their neighbours.
+- **Re-chained.** Inserting lines moves `seq` (now 46 to 56) and every later `prev`. The first `prev` is still
+  the SHA-256 of ledger line 45, `00a198bc39ddaa86daafd334bdf24865c84cf9c840412281446c7ab730ec405f`, and the tests
+  anchor on it. Smoke deleted the run's `key.bin`, so every `mac` is recomputed with a **fixture key of 32 zero
+  bytes**, and the tests check each `mac` against that key.
+
+Nothing in the run lines was redacted: no token appears there; `"auth":"oauth"` is only the credential type.
 
 ## Findings
 
-Places where the code and this repo's other docs (README, design.md, function help) disagree. The code is
-described above; the doc wording is left unchanged in 0.2.3.
+Places where the code and this repo's other docs (README, design.md, function help) disagreed at 0.2.3, and what
+0.2.4 did about each.
 
 1. **Payload boundary.** The README says the payload is the text "up to (not including) `,"prev":`, plus a
    closing `}`". The code takes the `,"prev":"<64 hex>","mac":"<64 hex>"}` suffix anchored at the end of the line.
    These differ when `body` contains a member named `prev`, e.g. `{"a":1,"prev":"x"}`. A reader that splits at
    the first `,"prev":` then gets the wrong payload and a false `mac mismatch`.
+   **0.2.4:** README now describes the anchored suffix. No code change.
 2. **Rejected lines are not idempotent across a crash.** The README and the `Start-LedgerKeeper` help say lines
    already chained are recognised and skipped on the next flush. That holds only for lines chained as-is. A
    rejected line's ledger payload is its `ledger.rejected` wrapper, not its raw text. If the keeper dies after
    chaining but before truncating, the next flush rejects the line again and writes a second `ledger.rejected`.
    Reproduced in a scratch run against 0.2.2.
+   **0.2.4:** fixed for any rejected line carrying a `stamp` string (see "What the keeper chains"). A stampless
+   one can still be recorded twice by a crash, by design (design 5).
 3. **`stamp` is not always the writer's.** The README says `stamp` is "set by the writer". On `ledger.rejected`,
    the keeper sets it from its own clock at flush time.
+   **0.2.4:** README wording fixed. No code change.
 4. **"Exactly a {stamp, kind, body, seq} object" is looser than it reads.** The keeper checks member names and
    order, that `kind` is a non-empty string, and that `seq` is an integer. It does not check that `stamp` is a
    UTC string or that `body` is an object: `{"stamp":5,"kind":"x","body":"s","seq":1}` is chained as-is.
+   **0.2.4:** `stamp` and `body` are checked on intake; that line is now `ledger.rejected`.
 5. **Not every denial is ledgered.** Claude.Agent's `entrypoint.ps1` header says every tool call passes the
    PreToolUse hook, "which spools policy.allow / policy.deny / policy.witness". When the hook fails it denies
-   (exit 2) without spooling. This is Claude.Agent's and Policy's wording, recorded here, not changed.
+   (exit 2) without spooling.
+   **0.2.4:** the `hook-failure` line is now in the contract (see "Hook failure"). It needs a change in
+   Claude.Agent.Policy's `hooks/pre-tool-use.ps1`, which is not made here; open until that lands.

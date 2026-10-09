@@ -12,10 +12,13 @@ function Start-LedgerKeeper {
     lost; it is never lowered (design.md 4).
 
     Each pending line's exact text becomes the payload of a ledger line; the keeper appends prev and mac.
-    A line that is not a {stamp, kind, body, seq} object is not chained as-is: the keeper ledgers a
+    A line that is not a {stamp, kind, body, seq} object (stamp a UTC yyyy-MM-ddTHH:mm:ss.fffffffZ string, kind
+    a non-empty string, body an object, seq an integer) is not chained as-is: the keeper ledgers a
     `ledger.rejected` entry carrying the raw text instead, so nothing the writer sent is silently dropped.
     Consumed lines are then truncated from the spool. If the keeper dies between the two steps, the next
-    flush recognises lines already in the ledger (exact text match on the trailing entries) and skips them.
+    flush skips what it already handled: a line chained as-is by exact match on the trailing entries' payloads,
+    a rejected line by exact match on their body.line, if it carries a stamp. A stampless rejected line may
+    repeat honestly, so it is ledgered again rather than dropped (design.md 5).
     #>
     [CmdletBinding()]
     param(

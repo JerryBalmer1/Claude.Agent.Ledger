@@ -93,14 +93,20 @@ function Invoke-LedgerFlush {
 
         $ledger = Open-LockedFile -File $LedgerFile -LockTimeoutSeconds $LockTimeoutSeconds
         try {
-            # Lines a previous flush already chained but did not get to truncate.
+            # Lines a previous flush already handled but did not get to truncate: payloads chained as-is, and the
+            # raw text inside ledger.rejected entries (their wrapper payload carries the keeper's clock, so it
+            # never matches twice).
             $tail = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            $rejectedTail = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
             $chained = Read-StreamText -Stream $ledger
             if ($chained.Length -gt 0) {
                 $all = $chained.TrimEnd("`n") -split "`n"
                 foreach ($line in ($all | Select-Object -Last $pending.Count)) {
                     $parts = Split-LedgerLine -Line $line
-                    if ($parts) { [void]$tail.Add($parts.Payload) }
+                    if (-not $parts) { continue }
+                    [void]$tail.Add($parts.Payload)
+                    $raw = Get-RejectedLine -Payload $parts.Payload
+                    if ($null -ne $raw) { [void]$rejectedTail.Add($raw) }
                 }
             }
 
@@ -108,7 +114,13 @@ function Invoke-LedgerFlush {
                 if ($line.Length -eq 0) { continue }
                 if ($tail.Contains($line)) { continue }
                 $reason = Test-PendingLine -Line $line
-                if ($reason) { New-LedgerPayload -Kind 'ledger.rejected' -Body @{ reason = $reason; line = $line } }
+                if ($reason) {
+                    # Idempotent on stamp: a rejected line is the same line again only if it carries a writer stamp
+                    # (unique to 100 ns). One without a stamp may legitimately repeat, so it is never skipped;
+                    # the worst case there is a second ledger.rejected, not a dropped line (design.md 5).
+                    if ($null -ne (Get-PendingStamp -Line $line) -and $rejectedTail.Contains($line)) { continue }
+                    New-LedgerPayload -Kind 'ledger.rejected' -Body @{ reason = $reason; line = $line }
+                }
                 else { $line }
             })
             if ($payloads.Count) { Write-LedgerLines -Stream $ledger -Key $Key -Payloads $payloads | Out-Null }
