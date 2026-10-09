@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.3 - 2026-10-09
+
+- 0.2.3: stream contract doc; policy-smoke fixture
+- `docs/stream-contract.md`: the line shape the keeper writes (members, order, types, which are required), the
+  `prev`/`mac` chain, `seq`, what the keeper chains or turns into `ledger.rejected`, how Claude.Agent runs start
+  and stop, and how Claude.Agent.Policy decisions and denials appear. Checked against the code; five places
+  where the README, the function help or Claude.Agent's entrypoint comment disagree with the code are listed
+  as Findings, doc wording otherwise unchanged.
+- `tests/fixtures/policy-smoke.ledger.jsonl`: lines 46-54 (the last run) of Claude.Agent's
+  `artifacts/ledger/ledger.jsonl`, byte for byte, nothing redacted. `tests/StreamContract.Tests.ps1` parses it under
+  the contract, walks the `prev` chain from the SHA-256 of ledger line 45, checks `seq` 46..54 and exactly one
+  `policy.deny` naming `rules[2]`.
+- `Invoke-Build Report` writes `artifacts/run-report.json` (run-report skill); `tests/Invoke-Tests.ps1` writes
+  `artifacts/testResults.xml` for it. No change to the writer or the keeper.
+
 ## 0.2.2 - 2026-10-08
 
 - 0.2.2: git-guard hook; run-report 0.2.2; graph-node 0.2.1

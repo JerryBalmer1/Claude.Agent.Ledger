@@ -84,4 +84,5 @@ The host waits for the spool to drain, stops the keeper, copies the ledger volum
 Invoke-Build          # runs Pester via pwsh -NoProfile -File tests/Invoke-Tests.ps1
 ```
 
-See [docs/design.md](docs/design.md) for the decisions behind this.
+See [docs/design.md](docs/design.md) for the decisions behind this, and [docs/stream-contract.md](docs/stream-contract.md)
+for the exact line shape readers can rely on.
