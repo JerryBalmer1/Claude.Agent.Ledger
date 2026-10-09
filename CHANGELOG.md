@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 - 2026-10-08
+
+- 0.2.2: git-guard hook; run-report 0.2.2; graph-node 0.2.1
+- Skills git-guard 0.1.0, run-report 0.2.2 and graph-node 0.2.1 copied from Graph HEAD; git-guard's PreToolUse hook merged into `.claude/settings.json`. `tests/Skills.Tests.ps1` checks each copy's version and full text against `git show HEAD:` in Graph, and the hook's exit codes (0, 0, 2, 2, 2, 2 for git status, git add, git commit, git push, git tag, gh pr merge).
+- `artifacts/` gitignored. No change to the module's code; Policy's and Alerts' `ledger-writer` copies move to 0.2.2.
+
 ## 0.2.1 - 2026-10-08
 
 - `Test-Ledger` checks seq continuity: across lines that carry `seq`, it must start at 1 and rise by exactly 1.
