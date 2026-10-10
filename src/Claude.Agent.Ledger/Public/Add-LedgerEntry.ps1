@@ -63,5 +63,6 @@ function Add-LedgerEntry {
         $fs.Dispose()
     }
 
-    $line | ConvertFrom-Json
+    # -AsHashtable: a body may hold names that differ only in case (an agent.snapshot env has HTTP_PROXY and http_proxy).
+    $line | ConvertFrom-Json -AsHashtable
 }

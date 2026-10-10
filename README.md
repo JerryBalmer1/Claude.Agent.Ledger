@@ -24,7 +24,7 @@ that run in different places and share only a spool directory:
 | `Start-LedgerKeeper -Spool <dir> -Ledger <dir> [-IntervalMilliseconds 500] [-Once]` | keeper | Runs `New-Ledger`, raises `<Spool>/seq` to the last seq in the ledger or spool (never lowers it), then flushes the spool into the ledger every interval until SIGTERM, and once more on SIGTERM. `-Once` syncs and flushes once and returns the number of lines moved. |
 | `Get-AgentSnapshot -At <agent.egress-check\|agent.stop> [-ImageDigest] [-Tools] [-McpConfig]` | writer | Returns the body of an `agent.snapshot` entry: env (secret-named values `<redacted>`), image digest, `/etc/os-release`, packages, executables on `PATH` with their ldd libraries, mounts, uid/gid/groups, the tools, hooks and MCP servers handed to `claude`. Linux parts are null elsewhere. See [docs/stream-contract.md](docs/stream-contract.md#agentsnapshot). |
 | `New-Ledger -Path <dir>` | keeper | Creates `<dir>/ledger.jsonl` and `<dir>/key.bin` (32 random bytes) if absent. Never overwrites. Sets both to `0600` on Linux. |
-| `Get-Ledger -Path <dir>` | host | Returns the entries, oldest first. Does not verify. |
+| `Get-Ledger -Path <dir>` | host | Returns the entries, oldest first, as ordered hashtables (a `body` may hold names that differ only in case). Does not verify. |
 | `Test-Ledger -Path <dir>` | host | Walks the chain and the seq numbers. Returns `$true`, or throws naming the first bad line and listing any others, each with its reasons: `prev mismatch`, `mac mismatch`, `seq-gap`, or `malformed`. |
 
 `-Path` may be the directory or the `ledger.jsonl` file inside it; the key is always `key.bin` next to it.

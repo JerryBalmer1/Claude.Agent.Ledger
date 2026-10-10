@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.5 - 2026-10-09
+
+- `Add-LedgerEntry` and `Get-Ledger` parse with `ConvertFrom-Json -AsHashtable`, so a body holding names that
+  differ only in case (an `agent.snapshot` env has `HTTP_PROXY` and `http_proxy`) no longer throws. Both now
+  return ordered hashtables instead of PSCustomObjects; read members by name (`.kind`, `.body.x`) as before.
+  New test in `tests/Ledger.Tests.ps1`. Claude.Agent can drop its 0.2.4 workaround.
+
 ## 0.2.4 - 2026-10-09
 
 - 0.2.4: findings fixes; snapshot entries

@@ -181,3 +181,22 @@ Describe 'Start-LedgerKeeper edge cases' {
         { Start-LedgerKeeper -Spool $dir -Ledger $dir -Once } | Should -Throw -ExpectedMessage '*different directories*'
     }
 }
+
+Describe 'names that differ only in case' {
+    # An agent.snapshot env holds HTTP_PROXY and http_proxy; 0.2.4 returned PSCustomObjects and threw on it.
+    It 'Add-LedgerEntry returns and Get-Ledger reads a body with HTTP_PROXY and http_proxy' {
+        $dir = Join-Path $TestDrive 'case-ledger'
+        $spool = Join-Path $TestDrive 'case-spool'
+        $env = [System.Collections.Generic.SortedDictionary[string, object]]::new([StringComparer]::Ordinal)
+        $env['HTTP_PROXY'] = 'http://mitm:8080'
+        $env['http_proxy'] = 'http://mitm:8080/'
+        $line = Add-LedgerEntry -Spool $spool -Kind 'agent.snapshot' -Body @{ env = $env } -ErrorAction Stop
+        @($line.body.env.Keys) | Should -Be @('HTTP_PROXY', 'http_proxy')
+        Start-LedgerKeeper -Spool $spool -Ledger $dir -Once | Should -Be 1
+        $e = @(Get-Ledger -Path $dir -ErrorAction Stop)
+        $e | Should -HaveCount 1
+        $e[0].body.env['HTTP_PROXY'] | Should -BeExactly 'http://mitm:8080'
+        $e[0].body.env['http_proxy'] | Should -BeExactly 'http://mitm:8080/'
+        Test-Ledger -Path $dir | Should -BeTrue
+    }
+}
